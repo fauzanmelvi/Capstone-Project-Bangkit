@@ -1,54 +1,62 @@
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
-import io
+from flask import Flask, request, jsonify
 import tensorflow as tf
-import keras
 import numpy as np
 from PIL import Image
-from flask import Flask, request, jsonify
+import io
 
-# Load the pre-trained model for image classification
-model = keras.models.load_model("model.h5", compile=False)
-
-# Initialize Flask app
 app = Flask(__name__)
 
-# Function to predict label for the given image
+# Load the TensorFlow saved model
+model = tf.saved_model.load("gs://ml-model-storage-bucket/model-testing/")
+infer = model.signatures["serving_default"]
 
-# Route to handle image prediction requests
-@app.route("/predict", methods=["GET", "POST"])
-def index():
-    file = request.files.get('file')
-    if file is None or file.filename == "":
-        return jsonify({"error": "no file"})
+# Define class names
+class_names = [
+   'aqua', 'coca cola', 'fanta', 'fruit tea', 'golda', 'mizone', 'nutri boost',
+   'pocari sweet', 'pulpy', 's tee', 'sprite', 'tebs', 'teh botol', 'teh pucuk'
+]
 
-    try:
-        image_bytes = file.read()
-        img = Image.open(io.BytesIO(image_bytes))
-        img = img.resize((224, 224), Image.NEAREST)
-        img = img.convert('RGB')
-        data = np.asarray(img)
+# Define the data augmentation and preprocessing layers as used in training
+data_augmentation = tf.keras.Sequential([
+   tf.keras.layers.RandomFlip('horizontal'),
+   tf.keras.layers.RandomRotation(0.2),
+])
 
-        data = data / 255.0
-        data = data.reshape(1, 224, 224, 3)
-        prediction = model.predict(data)
+preprocess_input = tf.keras.applications.efficientnet_v2.preprocess_input
 
-        # Get the class names from the model
-        class_names = [layer.name for layer in model.layers if layer.name.startswith('class_output')][0].weights[0].numpy()
-        class_names = [class_name.decode('utf-8') for class_name in class_names]
+def preprocess_image(image):
+   img = Image.open(io.BytesIO(image))
+   img = img.resize((224, 224))  # IMG_SIZE as defined during training
+   img = np.array(img)   # Convert PIL image to NumPy array
+   img = tf.expand_dims(img, axis=0)  # Add batch dimension
+   img = data_augmentation(img)  # Apply data augmentation
+   img = preprocess_input(img)  # Preprocess the augmented image
+   return img
 
-        # Convert numpy array to Python list
-        prediction = prediction.tolist()
+@app.route('/predict', methods=['POST'])
+def predict():
+   if 'file' not in request.files:
+       return "No file part", 400
+   file = request.files['file']
+   if file.filename == '':
+       return "No selected file", 400
+   image = file.read()
+   input_image = preprocess_image(image)
+   predictions = infer(tf.constant(input_image))
+   output_tensor_name = list(predictions.keys())[0]
+   output_tensor = predictions[output_tensor_name].numpy()
+   
+   # Map predictions to class names
+   predicted_class_indices = np.argmax(output_tensor, axis=1)
+   predicted_classes = [class_names[idx] for idx in predicted_class_indices]
+   confidence_scores = np.max(output_tensor, axis=1)
 
-        # Get the top-1 prediction and its corresponding class name
-        top_prediction = np.argmax(prediction[0])
-        top_class_name = class_names[top_prediction]
+   # Return JSON response
+   response = [
+       {'class': predicted_classes[i]}
+       for i in range(len(predicted_classes))
+   ]
+   return jsonify(response)
 
-        data = {"prediction": prediction, "class_names": class_names, "top_class_name": top_class_name}
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)})
-
-if __name__=="__main__":
-    app.run(debug=True)
+if __name__ == '__main__':
+   app.run(host='0.0.0.0', port=5000)
