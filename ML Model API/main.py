@@ -78,10 +78,14 @@ def predict():
 
         if class_details is None:
             return jsonify({'error': 'Class details not found'}), 404
+        
+        gula_content = class_details.get('gula', 'N/A')
+        warning_health = class_details.get('peringatan', 'N/A')
 
         response = {
             'jenis minuman': predicted_class,
-            'kandungan': class_details
+            'kandungan gula': gula_content,
+            'peringatan kesehatan': warning_health
         }
         return jsonify(response)
     except Exception as e:
